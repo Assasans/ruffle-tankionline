@@ -3,8 +3,9 @@
 use crate::avm2::method::Method;
 use crate::avm2::object::TObject;
 use crate::avm2::property::Property;
-use crate::avm2::ClassObject;
+use crate::avm2::traits::TraitMetadata;
 use crate::avm2::{Activation, Error, Object, Value};
+use crate::avm2::ClassObject;
 use crate::string::AvmString;
 use crate::string::WString;
 use instant::Instant;
@@ -386,6 +387,8 @@ fn describe_internal_body<'gc>(
         if !ns.is_public() {
             continue;
         }
+        let slot_metadata_table = vtable.slot_metadata_table();
+        let disp_metadata_table = vtable.disp_metadata_table();
         match prop {
             Property::ConstSlot { slot_id } | Property::Slot { slot_id } => {
                 let prop_class_name = vtable
@@ -398,11 +401,15 @@ fn describe_internal_body<'gc>(
                     _ => unreachable!(),
                 };
 
+                let trait_metadata = slot_metadata_table.get(slot_id);
+
                 write!(
                     xml_string,
-                    "<{elem_name} name=\"{prop_name}\" type=\"{prop_class_name}\"/>"
+                    "<{elem_name} name=\"{prop_name}\" type=\"{prop_class_name}\">"
                 )
                 .unwrap();
+                write_metadata(&mut xml_string, trait_metadata);
+                write!(xml_string, "</{elem_name}>").unwrap();
             }
             Property::Method { disp_id } => {
                 let method = vtable
@@ -419,8 +426,11 @@ fn describe_internal_body<'gc>(
                     .name()
                     .to_qualified_name(activation.context.gc_context);
 
+                let trait_metadata = disp_metadata_table.get(disp_id);
+
                 write!(xml_string, "<method name=\"{prop_name}\" declaredBy=\"{declared_by}\" returnType=\"{return_type_name}\">").unwrap();
                 write_params(&mut xml_string, &method.method, activation);
+                write_metadata(&mut xml_string, trait_metadata);
                 xml_string += "</method>";
             }
             Property::Virtual { get, set } => {
@@ -432,7 +442,7 @@ fn describe_internal_body<'gc>(
                 };
 
                 // For getters, obtain the type by looking at the getter return type.
-                // For setters, obtain the type by looking at the setter's  first parameter.
+                // For setters, obtain the type by looking at the setter's first parameter.
                 let (method_type, defining_class) = if let Some(get) = get {
                     let getter = vtable
                         .get_full_method(*get)
@@ -458,7 +468,19 @@ fn describe_internal_body<'gc>(
                     .name()
                     .to_qualified_name(activation.context.gc_context);
 
-                write!(xml_string, "<accessor name=\"{prop_name}\" access=\"{access}\" type=\"{accessor_type}\" declaredBy=\"{declared_by}\"/>").unwrap();
+                write!(xml_string, "<accessor name=\"{prop_name}\" access=\"{access}\" type=\"{accessor_type}\" declaredBy=\"{declared_by}\">").unwrap();
+
+                if let Some(get_disp_id) = get {
+                    let trait_metadata_getter = disp_metadata_table.get(get_disp_id);
+                    write_metadata(&mut xml_string, trait_metadata_getter);
+                }
+
+                if let Some(set_disp_id) = set {
+                    let trait_metadata_setter = disp_metadata_table.get(set_disp_id);
+                    write_metadata(&mut xml_string, trait_metadata_setter);
+                }
+
+                write!(xml_string, "</accessor>").unwrap();
             }
         }
     }
@@ -496,5 +518,37 @@ fn write_params<'gc>(
             "<parameter index=\"{index}\" type=\"{param_type_name}\" optional=\"{optional}\"/>"
         )
         .unwrap();
+    }
+}
+
+fn trait_metadata_as_xml_string(metadata: &TraitMetadata<'_>) -> String {
+    let mut xml_string = String::new();
+    if metadata.items.is_empty() {
+        // This was in the form of [metadata]
+        write!(xml_string, "<metadata name=\"{}\"/>", metadata.name).unwrap();
+    } else {
+        // This was in the form of [metadata(key="value", otherkey="othervalue")]
+        write!(xml_string, "<metadata name=\"{}\">", metadata.name).unwrap();
+
+        for item in metadata.items.iter() {
+            write!(
+                xml_string,
+                "<arg key=\"{}\" value=\"{}\"/>",
+                item.key, item.value,
+            )
+            .unwrap();
+        }
+
+        write!(xml_string, "</metadata>").unwrap();
+    };
+
+    xml_string
+}
+
+fn write_metadata(xml_string: &mut String, trait_metadata: Option<&Box<[TraitMetadata<'_>]>>) {
+    if let Some(trait_metadata) = trait_metadata {
+        for single_trait in trait_metadata.iter() {
+            write!(xml_string, "{}", trait_metadata_as_xml_string(single_trait)).unwrap();
+        }
     }
 }

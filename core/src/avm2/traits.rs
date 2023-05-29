@@ -4,6 +4,7 @@ use crate::avm2::activation::Activation;
 use crate::avm2::class::Class;
 use crate::avm2::method::Method;
 use crate::avm2::script::TranslationUnit;
+use crate::avm2::string::AvmString;
 use crate::avm2::value::{abc_default_value, Value};
 use crate::avm2::Error;
 use crate::avm2::Multiname;
@@ -12,7 +13,8 @@ use bitflags::bitflags;
 use gc_arena::{Collect, GcCell};
 use std::ops::Deref;
 use swf::avm2::types::{
-    DefaultValue as AbcDefaultValue, Trait as AbcTrait, TraitKind as AbcTraitKind,
+    DefaultValue as AbcDefaultValue, Index as AbcIndex, Metadata as AbcMetadata, Trait as AbcTrait,
+    TraitKind as AbcTraitKind,
 };
 
 bitflags! {
@@ -27,6 +29,22 @@ bitflags! {
         /// trait.
         const OVERRIDE = 1 << 1;
     }
+}
+
+// Represents a single key-value pair for a trait metadata.
+#[derive(Clone, Collect, Debug, Eq, PartialEq)]
+#[collect(no_drop)]
+pub struct TraitMetadataItem<'gc> {
+    pub key: AvmString<'gc>,
+    pub value: AvmString<'gc>,
+}
+
+// Represents a single metadata item for a trait.
+#[derive(Clone, Collect, Debug, Eq, PartialEq)]
+#[collect(no_drop)]
+pub struct TraitMetadata<'gc> {
+    pub name: AvmString<'gc>,
+    pub items: Vec<TraitMetadataItem<'gc>>,
 }
 
 /// Represents a trait as loaded into the VM.
@@ -51,6 +69,9 @@ pub struct Trait<'gc> {
 
     /// The kind of trait in use.
     kind: TraitKind<'gc>,
+
+    /// Metadata on the trait, such as "[Ruffle(CallHandler)]"
+    metadata: Option<Box<[TraitMetadata<'gc>]>>,
 }
 
 fn trait_attribs_from_abc_traits(abc_trait: &AbcTrait) -> TraitAttributes {
@@ -58,6 +79,54 @@ fn trait_attribs_from_abc_traits(abc_trait: &AbcTrait) -> TraitAttributes {
     attributes.set(TraitAttributes::FINAL, abc_trait.is_final);
     attributes.set(TraitAttributes::OVERRIDE, abc_trait.is_override);
     attributes
+}
+
+// Converts an AbcMetadata into a TraitMetadata by resolving all the indexes.
+fn metadata_from_abc_trait<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    translation_unit: TranslationUnit<'gc>,
+    metadata: &Vec<AbcIndex<AbcMetadata>>,
+) -> Result<Option<Box<[TraitMetadata<'gc>]>>, Error<'gc>> {
+    if metadata.is_empty() {
+        return Ok(None);
+    }
+
+    let abc = translation_unit.abc();
+    let mut trait_metadata_list = vec![];
+    for single_metadata in metadata.iter() {
+        // Lookup the Index<Metadata> to convert it into a Metadata.
+        let single_metadata = abc
+            .metadata
+            .get(single_metadata.0 as usize)
+            .ok_or_else(|| -> Error { format!("Unknown metadata {}", single_metadata.0).into() })?;
+
+        let name =
+            translation_unit.pool_string(single_metadata.name.0, &mut activation.borrow_gc())?;
+
+        let mut current_metadata_items = vec![];
+        for metadata_item in single_metadata.items.iter() {
+            let key =
+                translation_unit.pool_string(metadata_item.key.0, &mut activation.borrow_gc())?;
+
+            let value =
+                translation_unit.pool_string(metadata_item.value.0, &mut activation.borrow_gc())?;
+
+            let item = TraitMetadataItem {
+                key: key.into(),
+                value: value.into(),
+            };
+            current_metadata_items.push(item);
+        }
+
+        let single_metadata_result = TraitMetadata {
+            name: name.into(),
+            items: current_metadata_items,
+        };
+
+        trait_metadata_list.push(single_metadata_result);
+    }
+
+    Ok(Some(trait_metadata_list.into_boxed_slice()))
 }
 
 /// The fields for a particular kind of trait.
@@ -113,6 +182,7 @@ impl<'gc> Trait<'gc> {
             name,
             attributes: TraitAttributes::empty(),
             kind: TraitKind::Class { slot_id: 0, class },
+            metadata: None,
         }
     }
 
@@ -121,6 +191,7 @@ impl<'gc> Trait<'gc> {
             name,
             attributes: TraitAttributes::empty(),
             kind: TraitKind::Method { disp_id: 0, method },
+            metadata: None,
         }
     }
 
@@ -129,6 +200,7 @@ impl<'gc> Trait<'gc> {
             name,
             attributes: TraitAttributes::empty(),
             kind: TraitKind::Getter { disp_id: 0, method },
+            metadata: None,
         }
     }
 
@@ -137,6 +209,7 @@ impl<'gc> Trait<'gc> {
             name,
             attributes: TraitAttributes::empty(),
             kind: TraitKind::Setter { disp_id: 0, method },
+            metadata: None,
         }
     }
 
@@ -148,6 +221,7 @@ impl<'gc> Trait<'gc> {
                 slot_id: 0,
                 function,
             },
+            metadata: None,
         }
     }
 
@@ -165,6 +239,7 @@ impl<'gc> Trait<'gc> {
                 type_name,
                 unit: None,
             },
+            metadata: None,
         }
     }
 
@@ -182,6 +257,7 @@ impl<'gc> Trait<'gc> {
                 type_name,
                 unit: None,
             },
+            metadata: None,
         }
     }
 
@@ -213,6 +289,7 @@ impl<'gc> Trait<'gc> {
                         default_value,
                         unit: Some(unit),
                     },
+                    metadata: metadata_from_abc_trait(activation, unit, &abc_trait.metadata)?,
                 }
             }
             AbcTraitKind::Method { disp_id, method } => Trait {
@@ -222,6 +299,7 @@ impl<'gc> Trait<'gc> {
                     disp_id: *disp_id,
                     method: unit.load_method(*method, false, activation)?,
                 },
+                metadata: metadata_from_abc_trait(activation, unit, &abc_trait.metadata)?,
             },
             AbcTraitKind::Getter { disp_id, method } => Trait {
                 name,
@@ -230,6 +308,7 @@ impl<'gc> Trait<'gc> {
                     disp_id: *disp_id,
                     method: unit.load_method(*method, false, activation)?,
                 },
+                metadata: metadata_from_abc_trait(activation, unit, &abc_trait.metadata)?,
             },
             AbcTraitKind::Setter { disp_id, method } => Trait {
                 name,
@@ -238,6 +317,7 @@ impl<'gc> Trait<'gc> {
                     disp_id: *disp_id,
                     method: unit.load_method(*method, false, activation)?,
                 },
+                metadata: metadata_from_abc_trait(activation, unit, &abc_trait.metadata)?,
             },
             AbcTraitKind::Class { slot_id, class } => Trait {
                 name,
@@ -246,6 +326,7 @@ impl<'gc> Trait<'gc> {
                     slot_id: *slot_id,
                     class: unit.load_class(class.0, activation)?,
                 },
+                metadata: metadata_from_abc_trait(activation, unit, &abc_trait.metadata)?,
             },
             AbcTraitKind::Function { slot_id, function } => Trait {
                 name,
@@ -254,6 +335,7 @@ impl<'gc> Trait<'gc> {
                     slot_id: *slot_id,
                     function: unit.load_method(*function, true, activation)?,
                 },
+                metadata: metadata_from_abc_trait(activation, unit, &abc_trait.metadata)?,
             },
             AbcTraitKind::Const {
                 slot_id,
@@ -274,6 +356,7 @@ impl<'gc> Trait<'gc> {
                         default_value,
                         unit: Some(unit),
                     },
+                    metadata: metadata_from_abc_trait(activation, unit, &abc_trait.metadata)?,
                 }
             }
         })
@@ -285,6 +368,10 @@ impl<'gc> Trait<'gc> {
 
     pub fn kind(&self) -> &TraitKind<'gc> {
         &self.kind
+    }
+
+    pub fn metadata(&self) -> Option<Box<[TraitMetadata<'gc>]>> {
+        self.metadata.clone()
     }
 
     pub fn is_final(&self) -> bool {
