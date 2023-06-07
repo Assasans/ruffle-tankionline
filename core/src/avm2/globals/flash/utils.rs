@@ -408,7 +408,9 @@ fn describe_internal_body<'gc>(
                     "<{elem_name} name=\"{prop_name}\" type=\"{prop_class_name}\">"
                 )
                 .unwrap();
-                write_metadata(&mut xml_string, trait_metadata);
+                if let Some(metadata) = trait_metadata {
+                    write_metadata(&mut xml_string, metadata);
+                }
                 write!(xml_string, "</{elem_name}>").unwrap();
             }
             Property::Method { disp_id } => {
@@ -430,7 +432,9 @@ fn describe_internal_body<'gc>(
 
                 write!(xml_string, "<method name=\"{prop_name}\" declaredBy=\"{declared_by}\" returnType=\"{return_type_name}\">").unwrap();
                 write_params(&mut xml_string, &method.method, activation);
-                write_metadata(&mut xml_string, trait_metadata);
+                if let Some(metadata) = trait_metadata {
+                    write_metadata(&mut xml_string, metadata);
+                }
                 xml_string += "</method>";
             }
             Property::Virtual { get, set } => {
@@ -472,12 +476,16 @@ fn describe_internal_body<'gc>(
 
                 if let Some(get_disp_id) = get {
                     let trait_metadata_getter = disp_metadata_table.get(get_disp_id);
-                    write_metadata(&mut xml_string, trait_metadata_getter);
+                    if let Some(metadata) = trait_metadata_getter {
+                        write_metadata(&mut xml_string, metadata);
+                    }
                 }
 
                 if let Some(set_disp_id) = set {
                     let trait_metadata_setter = disp_metadata_table.get(set_disp_id);
-                    write_metadata(&mut xml_string, trait_metadata_setter);
+                    if let Some(metadata) = trait_metadata_setter {
+                        write_metadata(&mut xml_string, metadata);
+                    }
                 }
 
                 write!(xml_string, "</accessor>").unwrap();
@@ -545,10 +553,8 @@ fn trait_metadata_as_xml_string(metadata: &TraitMetadata<'_>) -> String {
     xml_string
 }
 
-fn write_metadata(xml_string: &mut String, trait_metadata: Option<&Box<[TraitMetadata<'_>]>>) {
-    if let Some(trait_metadata) = trait_metadata {
-        for single_trait in trait_metadata.iter() {
-            write!(xml_string, "{}", trait_metadata_as_xml_string(single_trait)).unwrap();
-        }
+fn write_metadata(xml_string: &mut String, trait_metadata: &[TraitMetadata<'_>]) {
+    for single_trait in trait_metadata.iter() {
+        write!(xml_string, "{}", trait_metadata_as_xml_string(single_trait)).unwrap();
     }
 }
