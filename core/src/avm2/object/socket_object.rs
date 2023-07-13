@@ -21,8 +21,9 @@ pub fn socket_allocator<'gc>(
         activation.context.gc_context,
         SocketObjectData {
             base,
-            stream: None,
-            send_queue: None
+            recv_queue: None,
+            send_queue: None,
+            flush_queue: None,
         },
     ))
     .into())
@@ -45,12 +46,12 @@ impl fmt::Debug for SocketObject<'_> {
 }
 
 impl<'gc> SocketObject<'gc> {
-    pub fn socket(self) -> Option<GcCell<'gc, GcTcpStream>> {
-        self.0.read().stream
+    pub fn recv_queue(self) -> Option<GcCell<'gc, GcRecvQueue>> {
+        self.0.read().recv_queue
     }
 
-    pub fn set_socket(self, socket: Option<GcCell<'gc, GcTcpStream>>, mc: MutationContext<'gc, '_>) {
-        self.0.write(mc).stream = socket;
+    pub fn set_recv_queue(self, recv_queue: Option<GcCell<'gc, GcRecvQueue>>, mc: MutationContext<'gc, '_>) {
+        self.0.write(mc).recv_queue = recv_queue;
     }
 
     pub fn send_queue(self) -> Option<GcCell<'gc, GcSendQueue>> {
@@ -60,15 +61,27 @@ impl<'gc> SocketObject<'gc> {
     pub fn set_send_queue(self, send_queue: Option<GcCell<'gc, GcSendQueue>>, mc: MutationContext<'gc, '_>) {
         self.0.write(mc).send_queue = send_queue;
     }
+
+    pub fn flush_queue(self) -> Option<GcCell<'gc, GcFlushQueue>> {
+        self.0.read().flush_queue
+    }
+
+    pub fn set_flush_queue(self, flush_queue: Option<GcCell<'gc, GcFlushQueue>>, mc: MutationContext<'gc, '_>) {
+        self.0.write(mc).flush_queue = flush_queue;
+    }
 }
 
 #[derive(Collect)]
 #[collect(require_static)]
-pub struct GcTcpStream(pub &'static mut TcpStream);
+pub struct GcRecvQueue(pub &'static flume::Receiver<Vec<u8>>);
 
 #[derive(Collect)]
 #[collect(require_static)]
-pub struct GcSendQueue(pub &'static tokio::sync::mpsc::Sender<Vec<u8>>);
+pub struct GcSendQueue(pub &'static flume::Sender<Vec<u8>>);
+
+#[derive(Collect)]
+#[collect(require_static)]
+pub struct GcFlushQueue(pub &'static flume::Sender<()>);
 
 #[derive(Clone, Collect)]
 #[collect(no_drop)]
@@ -76,10 +89,9 @@ pub struct SocketObjectData<'gc> {
     /// Base script object
     base: ScriptObjectData<'gc>,
 
-    /// The [GcTcpStream] associated with this SocketObject object
-    stream: Option<GcCell<'gc, GcTcpStream>>,
-
-    send_queue: Option<GcCell<'gc, GcSendQueue>>
+    recv_queue: Option<GcCell<'gc, GcRecvQueue>>,
+    send_queue: Option<GcCell<'gc, GcSendQueue>>,
+    flush_queue: Option<GcCell<'gc, GcFlushQueue>>,
 }
 
 impl<'gc> TObject<'gc> for SocketObject<'gc> {

@@ -150,10 +150,7 @@ package flash.net {
             stub_method("flash.net.Socket", "writeBoolean");
         }
 
-        public function writeByte(value:int):void {
-            stub_method("flash.net.Socket", "writeByte");
-        }
-
+        public native function writeByte(value:int):void;
         public native function writeBytes(bytes:ByteArray, offset:uint = 0, length:uint = 0):void;
 
         public function writeDouble(value:Number):void {

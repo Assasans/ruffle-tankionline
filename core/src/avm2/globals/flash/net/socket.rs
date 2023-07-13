@@ -5,7 +5,7 @@ use tokio::net::TcpStream;
 use gc_arena::GcCell;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::avm2::activation::Activation;
-use crate::avm2::object::{GcSendQueue, GcTcpStream, TObject};
+use crate::avm2::object::{GcFlushQueue, GcRecvQueue, GcSendQueue, TObject};
 use crate::avm2::value::Value;
 use crate::avm2::{Avm2, Error, EventObject, Multiname, Object};
 use crate::avm2::bytearray::ByteArrayStorage;
@@ -21,7 +21,6 @@ pub fn connect<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     tracing::debug!("Socket.connect: start");
 
-    let old_this = this;
     if let Some(this) = this.as_socket() {
         let host = match args.get(0) {
             Some(Value::String(host)) => host,
@@ -54,7 +53,6 @@ pub fn write_bytes<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     tracing::debug!("Socket.writeBytes: start");
 
-    let old_this = this;
     if let Some(this) = this.as_socket() {
         let bytes = match args.get(0) {
             Some(Value::Object(bytes)) => bytes.as_bytearray().unwrap(),
@@ -75,13 +73,40 @@ pub fn write_bytes<'gc>(
 
         let mut socket: GcCell<'gc, GcSendQueue> = this.send_queue().unwrap();
         let socket = socket.read();
-        let socket: &tokio::sync::mpsc::Sender<Vec<u8>> = socket.0;
-        socket.blocking_send(ByteArrayStorage::bytes(&bytes).to_vec()).unwrap();
+        let socket = socket.0;
+        socket.send(ByteArrayStorage::bytes(&bytes).to_vec()).unwrap();
         // socket.write_all(ByteArrayStorage::bytes(&bytes)).unwrap();
 
         return Ok(Value::Undefined);
     }
     Err("Socket.prototype.writeBytes has been called on an incompatible object".into())
+}
+
+/// Native function definition for `Socket.writeByte`
+pub fn write_byte<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    tracing::debug!("Socket.writeByte: start");
+
+    if let Some(this) = this.as_socket() {
+        let byte = args
+            .get(0)
+            .cloned()
+            .unwrap_or(Value::Undefined)
+            .coerce_to_i32(activation)
+            .unwrap();
+        tracing::debug!("Socket.writeByte: {:?}", byte);
+
+        let mut socket: GcCell<'gc, GcSendQueue> = this.send_queue().unwrap();
+        let socket = socket.read();
+        let socket = socket.0;
+        socket.send(vec![byte as u8]).unwrap();
+
+        return Ok(Value::Undefined);
+    }
+    Err("Socket.prototype.writeByte has been called on an incompatible object".into())
 }
 
 /// Native function definition for `Socket.flush`
@@ -92,12 +117,11 @@ pub fn flush<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     tracing::debug!("Socket.flush: start");
 
-    let old_this = this;
     if let Some(this) = this.as_socket() {
-        let mut socket: GcCell<'gc, GcTcpStream> = this.socket().unwrap();
-        let mut socket = socket.write(activation.context.gc_context);
-        let socket: &mut TcpStream = socket.0;
-        socket.flush(); // TODO: Wtf
+        let mut socket: GcCell<'gc, GcFlushQueue> = this.flush_queue().unwrap();
+        let socket = socket.read();
+        let socket = socket.0;
+        socket.send(()).unwrap();
 
         return Ok(Value::Undefined);
     }
@@ -112,7 +136,6 @@ pub fn read_bytes<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     tracing::debug!("Socket.readBytes: start");
 
-    let old_this = this;
     if let Some(this) = this.as_socket() {
         let mut bytes = match args.get(0) {
             Some(Value::Object(bytes)) => bytes.as_bytearray_mut(activation.context.gc_context).unwrap(),
@@ -131,18 +154,41 @@ pub fn read_bytes<'gc>(
         };
         tracing::debug!("Socket.readBytes: {:?} offset={} len={}", bytes, offset, length);
 
-        let mut socket: GcCell<'gc, GcTcpStream> = this.socket().unwrap();
-        let mut socket = socket.write(activation.context.gc_context);
-        let socket: &mut TcpStream = socket.0;
+        // let length = if length == 0 { 1024 } else { length };
 
-        let length = if length == 0 { 1024 } else { length };
+        let mut socket: GcCell<'gc, GcRecvQueue> = this.recv_queue().unwrap();
+        let socket = socket.read();
+        let socket = socket.0;
 
-        let mut buffer = Vec::new();
-        buffer.resize(length, 0);
-        let read = socket.try_read(&mut buffer).unwrap();
+        let buffer = if length == 0 {
+            tracing::debug!("Socket.readBytes: reading unbounded");
+            let mut buffer = Vec::with_capacity(1024);
+            while socket.len() > 0 {
+                let chunk = socket.recv().unwrap();
+                buffer.extend(chunk);
+            }
+            tracing::debug!("Socket.readBytes: read unbounded: {} bytes", buffer.len());
 
-        bytes.write_bytes(&buffer[..read]).unwrap();
-        tracing::error!("read {} bytes out of {}", read, length);
+            buffer
+        } else {
+            tracing::debug!("Socket.readBytes: reading bounded");
+            let mut buffer = Vec::with_capacity(length);
+            while buffer.len() < length {
+                let chunk = socket.recv().unwrap();
+                buffer.extend(chunk);
+            }
+            tracing::debug!("Socket.readBytes: read bounded: {} bytes", buffer.len());
+
+            buffer
+        };
+
+        // self.position.set(self.position.get() + buf.len());
+        tracing::error!("byte output position: {}", bytes.position());
+        let position = bytes.position();
+        bytes.write_at(&buffer, position).unwrap();
+        // bytes.write_bytes(&buffer).unwrap();
+        tracing::error!("read {} bytes out of {}, pos: {}", buffer.len(), length, position);
+        tracing::error!("{:?}", buffer);
 
         return Ok(Value::Undefined);
     }

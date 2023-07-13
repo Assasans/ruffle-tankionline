@@ -5,7 +5,7 @@ use crate::avm1::ExecutionReason;
 use crate::avm1::{Activation, ActivationIdentifier};
 use crate::avm1::{Object, SoundObject, TObject, Value};
 use crate::avm2::bytearray::ByteArrayStorage;
-use crate::avm2::object::{BitmapDataObject, ByteArrayObject, EventObject as Avm2EventObject, GcTcpStream, GcSendQueue, LoaderStream, SocketObject, TObject as _};
+use crate::avm2::object::{BitmapDataObject, ByteArrayObject, EventObject as Avm2EventObject, GcFlushQueue, GcRecvQueue, GcSendQueue, LoaderStream, SocketObject, TObject as _};
 use crate::avm2::{Activation as Avm2Activation, Avm2, Domain as Avm2Domain, EventObject, Object as Avm2Object, Value as Avm2Value};
 use crate::backend::navigator::{OwnedFuture, Request};
 use crate::bitmap::bitmap_data::Color;
@@ -33,9 +33,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll};
 use std::time::Duration;
+use fluent_templates::lazy_static::lazy_static;
 use swf::read::{extract_swz, read_compression_type};
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpStream, ToSocketAddrs};
+use tokio::runtime::Runtime;
+use tokio::select;
 use url::{form_urlencoded, ParseError, Url};
 
 pub type Handle = Index;
@@ -2120,13 +2124,56 @@ impl<'gc> Loader<'gc> {
             .upgrade()
             .expect("Could not upgrade weak reference to player");
 
+        let (connect_tx, connect_rx) = flume::bounded(0);
+        let (send_tx, send_rx) = flume::unbounded::<Vec<u8>>();
+        let (recv_tx, recv_rx) = flume::unbounded::<Vec<u8>>();
+        let (recv_event_tx, recv_event_rx) = flume::unbounded();
+        let (flush_tx, flush_rx) = flume::unbounded();
+
+        RT.spawn(async move {
+            tracing::error!("started IO future");
+
+            tracing::error!("TcpStream::connect to {:?}", addr);
+            let mut socket = TcpStream::connect(addr).await.unwrap();
+
+            tracing::error!("connect_tx.send_async enter");
+            connect_tx.send_async(()).await.unwrap();
+            tracing::error!("connect_tx.send_async exit");
+
+            let mut send_buffer = Vec::new();
+            let mut buffer = Vec::new();
+            buffer.resize(1024, 0);
+            loop {
+                tracing::error!("waiting for IO...");
+                select! {
+                    length = socket.read(&mut buffer) => {
+                        let length = length.unwrap();
+                        tracing::error!("read {} bytes into buffer", length);
+                        recv_tx.send_async(buffer[..length].to_vec()).await.unwrap();
+                        recv_event_tx.send_async(length).await.unwrap();
+                    }
+
+                    buffer = send_rx.recv_async() => {
+                        let buffer = buffer.unwrap();
+                        tracing::error!("write {} bytes into socket (buffered)", buffer.len());
+                        send_buffer.extend(&buffer);
+                        // socket.write_all(&buffer).await.unwrap();
+                    }
+
+                    _ = flush_rx.recv_async(), if send_rx.is_empty() => {
+                        tracing::error!("flush socket");
+                        socket.write_all(&send_buffer).await.unwrap();
+                        send_buffer.clear();
+                        socket.flush().await.unwrap();
+                    }
+                }
+            }
+        });
+
         Box::pin(async move {
             tracing::error!("started read future");
 
-            tracing::error!("TcpStream::connect to {:?}", addr);
-            let socket = TcpStream::connect(addr).await.unwrap();
-
-            let (sender, receiver) = tokio::sync::mpsc::channel(64);
+            connect_rx.recv_async().await.unwrap();
             player.lock().unwrap().update(|uc| {
                 tracing::error!("lock player to initialize socket object");
 
@@ -2140,11 +2187,15 @@ impl<'gc> Loader<'gc> {
                 let mut activation = Avm2Activation::from_nothing(uc.reborrow());
 
                 let gc_context = activation.context.gc_context;
-                target.set_socket(Some(GcCell::new(gc_context, GcTcpStream(Box::leak(Box::new(socket))))), gc_context);
-                tracing::debug!("Socket.connect: set socket in native object {:?}", target);
 
-                target.set_send_queue(Some(GcCell::new(gc_context, GcSendQueue(Box::leak(Box::new(sender))))), gc_context);
+                target.set_recv_queue(Some(GcCell::new(gc_context, GcRecvQueue(Box::leak(Box::new(recv_rx))))), gc_context);
+                tracing::debug!("Socket.connect: set recv queue in native object {:?}", target);
+
+                target.set_send_queue(Some(GcCell::new(gc_context, GcSendQueue(Box::leak(Box::new(send_tx))))), gc_context);
                 tracing::debug!("Socket.connect: set send queue in native object {:?}", target);
+
+                target.set_flush_queue(Some(GcCell::new(gc_context, GcFlushQueue(Box::leak(Box::new(flush_tx))))), gc_context);
+                tracing::debug!("Socket.connect: set flush queue in native object {:?}", target);
 
                 let value = target.value_of(activation.context.gc_context).unwrap();
                 if let Avm2Value::Object(object) = value {
@@ -2154,73 +2205,44 @@ impl<'gc> Loader<'gc> {
                 }
             });
 
-            // let socket = player.lock().unwrap().update(|uc| {
-            //     let loader = uc.load_manager.get_loader(handle);
-            //     let target = match loader {
-            //         Some(&Loader::Socket { target_socket, .. }) => target_socket,
-            //         // We would have already returned after the previous 'update' call
-            //         _ => unreachable!(),
-            //     };
-            //
-            //     let mut activation = Avm2Activation::from_nothing(uc.reborrow());
-            //
-            //     let mut socket: GcCell<'_, GcTcpStream> = target.socket().unwrap();
-            //     let mut socket = socket.write(activation.context.gc_context);
-            //     let socket: &mut TcpStream = socket.0;
-            //     socket.try_clone().expect("failed to clone a socket")
-            // });
-            // socket.set_nonblocking(true).unwrap();
-            // socket.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-            // tracing::error!("cloned socket for reading");
-            //
-            // let mut buffer = Vec::new();
-            // buffer.resize(1024, 0);
             loop {
-                tracing::error!("++ loop iteration");
-                let future = WaitForDataFuture {
-                    // stream: &socket,
-                    // buf: &mut buffer[..],
-                };
+                let length = recv_event_rx.recv_async().await.unwrap();
 
-                tracing::error!("waiting for bytes...");
-                let length = future.await.unwrap();
-                tracing::error!("available {} bytes", length);
+                player.lock().unwrap().update(|uc| {
+                    tracing::error!("locked player to send socketData event");
 
-                // player.lock().unwrap().update(|uc| {
-                //     tracing::error!("locked player");
-                //
-                //     let loader = uc.load_manager.get_loader(handle);
-                //     let target = match loader {
-                //         Some(&Loader::Socket { target_socket, .. }) => target_socket,
-                //         // We would have already returned after the previous 'update' call
-                //         _ => unreachable!(),
-                //     };
-                //
-                //     let mut activation = Avm2Activation::from_nothing(uc.reborrow());
-                //
-                //     let event = activation
-                //         .avm2()
-                //         .classes()
-                //         .progressevent
-                //         .construct(
-                //             &mut activation,
-                //             &[
-                //                 "socketData".into(),
-                //                 false.into(),
-                //                 false.into(),
-                //                 length.into(),
-                //                 0.into(),
-                //             ],
-                //         )
-                //         .map_err(|e| Error::Avm2Error(e.to_string()))
-                //         .unwrap();
-                //
-                //     let value = target.value_of(activation.context.gc_context).unwrap();
-                //     if let Avm2Value::Object(object) = value {
-                //         Avm2::dispatch_event(&mut activation.context, event, object);
-                //         tracing::error!("dispatched ProgressEvent.SOCKET_DATA event");
-                //     }
-                // });
+                    let loader = uc.load_manager.get_loader(handle);
+                    let target = match loader {
+                        Some(&Loader::Socket { target_socket, .. }) => target_socket,
+                        // We would have already returned after the previous 'update' call
+                        _ => unreachable!(),
+                    };
+
+                    let mut activation = Avm2Activation::from_nothing(uc.reborrow());
+
+                    let event = activation
+                        .avm2()
+                        .classes()
+                        .progressevent
+                        .construct(
+                            &mut activation,
+                            &[
+                                "socketData".into(),
+                                false.into(),
+                                false.into(),
+                                length.into(),
+                                0.into(),
+                            ],
+                        )
+                        .map_err(|e| Error::Avm2Error(e.to_string()))
+                        .unwrap();
+
+                    let value = target.value_of(activation.context.gc_context).unwrap();
+                    if let Avm2Value::Object(object) = value {
+                        Avm2::dispatch_event(&mut activation.context, event, object);
+                        tracing::error!("dispatched ProgressEvent.SOCKET_DATA event");
+                    }
+                });
             }
 
             Ok(())
@@ -2228,44 +2250,6 @@ impl<'gc> Loader<'gc> {
     }
 }
 
-// struct WaitForDataFuture<'a> {
-//     stream: &'a TcpStream,
-//     buf: &'a mut [u8],
-// }
-
-struct WaitForDataFuture {
-}
-
-// impl<'a> Future for WaitForDataFuture<'a> {
-impl Future for WaitForDataFuture {
-    type Output = io::Result<usize>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        tracing::error!("WaitForDataFuture: enter");
-        // cx.waker().wake_by_ref();
-        tracing::error!("WaitForDataFuture: exit");
-        Poll::Pending
-
-        // tracing::error!("WaitForDataFuture: poll -> peek");
-        //
-        // match self.stream.peek(&mut self.buf) {
-        //     Ok(0) => {
-        //         tracing::error!("WaitForDataFuture: Ok 0");
-        //         Poll::Ready(Err(io::Error::new(
-        //             ErrorKind::UnexpectedEof,
-        //             "connection closed",
-        //         )))
-        //     },
-        //     Ok(length) => {
-        //         tracing::error!("WaitForDataFuture: Ok {}", length);
-        //         Poll::Ready(Ok(length))
-        //     }
-        //     Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-        //         tracing::error!("WaitForDataFuture: WouldBlock");
-        //         cx.waker().wake_by_ref();
-        //         Poll::Pending
-        //     }
-        //     Err(e) => Poll::Ready(Err(e)),
-        // }
-    }
+lazy_static! {
+    static ref RT: Runtime = Runtime::new().unwrap();
 }

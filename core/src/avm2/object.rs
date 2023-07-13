@@ -110,7 +110,7 @@ pub use crate::avm2::object::shader_data_object::{
     shader_data_allocator, ShaderDataObject, ShaderDataObjectWeak,
 };
 pub use crate::avm2::object::socket_object::{
-    socket_allocator, SocketObject, SocketObjectWeak, GcTcpStream, GcSendQueue,
+    socket_allocator, SocketObject, SocketObjectWeak, GcRecvQueue, GcSendQueue, GcFlushQueue,
 };
 pub use crate::avm2::object::sound_object::{
     sound_allocator, QueuedPlay, SoundData, SoundObject, SoundObjectWeak,
