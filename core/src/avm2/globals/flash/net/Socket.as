@@ -9,6 +9,7 @@ package flash.net {
     import __ruffle__.stub_getter;
     import __ruffle__.stub_setter;
 
+    [Ruffle(InstanceAllocator)]
     public class Socket extends EventDispatcher implements IDataOutput, IDataInput {
         private var _timeout:uint;
 
@@ -21,9 +22,7 @@ package flash.net {
             }
         }
 
-        public function connect(host: String, port: int):void {
-            stub_method("flash.net.Socket", "connect");
-        }
+        public native function connect(host: String, port: int):void;
 
 
         public function get timeout():uint {
@@ -78,9 +77,7 @@ package flash.net {
             stub_setter("flash.net.Socket", "objectEncoding");
         }
 
-        public function flush():void {
-            stub_method("flash.net.Socket", "flush");
-        }
+        public native function flush():void;
 
         public function readBoolean():Boolean {
             stub_method("flash.net.Socket", "readBoolean");
@@ -92,9 +89,7 @@ package flash.net {
             return 0;
         }
 
-        public function readBytes(bytes:ByteArray, offset:uint = 0, length:uint = 0):void {
-            stub_method("flash.net.Socket", "readBytes");
-        }
+        public native function readBytes(bytes:ByteArray, offset:uint = 0, length:uint = 0):void;
 
         public function readDouble():Number {
             stub_method("flash.net.Socket", "readDouble");
@@ -159,9 +154,7 @@ package flash.net {
             stub_method("flash.net.Socket", "writeByte");
         }
 
-        public function writeBytes(bytes:ByteArray, offset:uint = 0, length:uint = 0):void {
-            stub_method("flash.net.Socket", "writeBytes");
-        }
+        public native function writeBytes(bytes:ByteArray, offset:uint = 0, length:uint = 0):void;
 
         public function writeDouble(value:Number):void {
             stub_method("flash.net.Socket", "writeDouble");

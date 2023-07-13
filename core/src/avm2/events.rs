@@ -417,10 +417,11 @@ pub fn dispatch_event_to_target<'gc>(
 
         if let Err(err) = handler.call(global.into(), &[event.into()], activation) {
             tracing::error!(
-                "Error dispatching event {:?} to handler {:?} : {:?}",
+                "Error dispatching event {:?} to handler {:?} : {:?}\n{}",
                 event,
                 handler,
                 err,
+                activation.context.avm2.call_stack().read()
             );
         }
     }

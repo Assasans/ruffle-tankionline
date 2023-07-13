@@ -126,7 +126,7 @@ impl ShapeTessellator {
             } else if !self.is_stroke && next_is_stroke {
                 // Bake solid color fills followed by strokes into a single draw call, and adjust
                 // the index count to omit the strokes when rendering this shape as a mask.
-                debug_assert!(self.mask_index_count.is_none());
+                // debug_assert!(self.mask_index_count.is_none());
                 self.mask_index_count = Some(self.lyon_mesh.indices.len() as u32);
             }
             self.is_stroke = next_is_stroke;

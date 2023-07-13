@@ -9,6 +9,7 @@ pub mod net_stream;
 pub mod object_encoding;
 pub mod shared_object;
 pub mod url_loader;
+pub mod socket;
 
 /// Implements `flash.net.navigateToURL`
 pub fn navigate_to_url<'gc>(

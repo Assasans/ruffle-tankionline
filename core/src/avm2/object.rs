@@ -52,6 +52,7 @@ mod qname_object;
 mod regexp_object;
 mod script_object;
 mod shader_data_object;
+mod socket_object;
 mod sound_object;
 mod soundchannel_object;
 mod stage3d_object;
@@ -107,6 +108,9 @@ pub use crate::avm2::object::regexp_object::{reg_exp_allocator, RegExpObject, Re
 pub use crate::avm2::object::script_object::{ScriptObject, ScriptObjectData, ScriptObjectWeak};
 pub use crate::avm2::object::shader_data_object::{
     shader_data_allocator, ShaderDataObject, ShaderDataObjectWeak,
+};
+pub use crate::avm2::object::socket_object::{
+    socket_allocator, SocketObject, SocketObjectWeak, GcTcpStream, GcSendQueue,
 };
 pub use crate::avm2::object::sound_object::{
     sound_allocator, QueuedPlay, SoundData, SoundObject, SoundObjectWeak,
@@ -171,6 +175,7 @@ pub use crate::avm2::object::xml_object::{xml_allocator, XmlObject, XmlObjectWea
         Program3DObject(Program3DObject<'gc>),
         NetStreamObject(NetStreamObject<'gc>),
         ShaderDataObject(ShaderDataObject<'gc>),
+        SocketObject(SocketObject<'gc>),
     }
 )]
 pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy {
@@ -1358,6 +1363,10 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         None
     }
 
+    fn as_socket(&self) -> Option<SocketObject<'gc>> {
+        None
+    }
+
     fn as_stage_3d(&self) -> Option<Stage3DObject<'gc>> {
         None
     }
@@ -1414,6 +1423,7 @@ impl<'gc> Object<'gc> {
             Self::Program3DObject(o) => WeakObject::Program3DObject(Program3DObjectWeak(Gc::downgrade(o.0))),
             Self::NetStreamObject(o) => WeakObject::NetStreamObject(NetStreamObjectWeak(GcCell::downgrade(o.0))),
             Self::ShaderDataObject(o) => WeakObject::ShaderDataObject(ShaderDataObjectWeak(Gc::downgrade(o.0))),
+            Self::SocketObject(o) => WeakObject::SocketObject(SocketObjectWeak(GcCell::downgrade(o.0))),
         }
     }
 }
@@ -1469,6 +1479,7 @@ pub enum WeakObject<'gc> {
     Program3DObject(Program3DObjectWeak<'gc>),
     NetStreamObject(NetStreamObjectWeak<'gc>),
     ShaderDataObject(ShaderDataObjectWeak<'gc>),
+    SocketObject(SocketObjectWeak<'gc>),
 }
 
 impl<'gc> WeakObject<'gc> {
@@ -1507,6 +1518,7 @@ impl<'gc> WeakObject<'gc> {
             Self::Program3DObject(o) => Program3DObject(o.0.upgrade(mc)?).into(),
             Self::NetStreamObject(o) => NetStreamObject(o.0.upgrade(mc)?).into(),
             Self::ShaderDataObject(o) => ShaderDataObject(o.0.upgrade(mc)?).into(),
+            Self::SocketObject(o) => SocketObject(o.0.upgrade(mc)?).into(),
         })
     }
 }

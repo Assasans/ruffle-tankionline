@@ -10,3 +10,5 @@ target/
 
 # Flash recovery files
 RECOVER_*.fla
+
+.idea
