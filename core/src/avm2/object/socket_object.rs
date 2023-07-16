@@ -8,7 +8,6 @@ use crate::avm2::Error;
 use core::fmt;
 use gc_arena::{Collect, GcCell, GcWeakCell, MutationContext};
 use std::cell::{Ref, RefMut};
-use tokio::net::TcpStream;
 
 /// A class instance allocator that allocates Socket objects.
 pub fn socket_allocator<'gc>(
@@ -22,8 +21,7 @@ pub fn socket_allocator<'gc>(
         SocketObjectData {
             base,
             recv_queue: None,
-            send_queue: None,
-            flush_queue: None,
+            outgoing_queue: None,
         },
     ))
     .into())
@@ -50,24 +48,24 @@ impl<'gc> SocketObject<'gc> {
         self.0.read().recv_queue
     }
 
-    pub fn set_recv_queue(self, recv_queue: Option<GcCell<'gc, GcRecvQueue>>, mc: MutationContext<'gc, '_>) {
+    pub fn set_recv_queue(
+        self,
+        recv_queue: Option<GcCell<'gc, GcRecvQueue>>,
+        mc: MutationContext<'gc, '_>,
+    ) {
         self.0.write(mc).recv_queue = recv_queue;
     }
 
-    pub fn send_queue(self) -> Option<GcCell<'gc, GcSendQueue>> {
-        self.0.read().send_queue
+    pub fn outgoing_queue(self) -> Option<GcCell<'gc, GcOutgoingQueue>> {
+        self.0.read().outgoing_queue
     }
 
-    pub fn set_send_queue(self, send_queue: Option<GcCell<'gc, GcSendQueue>>, mc: MutationContext<'gc, '_>) {
-        self.0.write(mc).send_queue = send_queue;
-    }
-
-    pub fn flush_queue(self) -> Option<GcCell<'gc, GcFlushQueue>> {
-        self.0.read().flush_queue
-    }
-
-    pub fn set_flush_queue(self, flush_queue: Option<GcCell<'gc, GcFlushQueue>>, mc: MutationContext<'gc, '_>) {
-        self.0.write(mc).flush_queue = flush_queue;
+    pub fn set_outgoing_queue(
+        self,
+        outgoing_queue: Option<GcCell<'gc, GcOutgoingQueue>>,
+        mc: MutationContext<'gc, '_>,
+    ) {
+        self.0.write(mc).outgoing_queue = outgoing_queue;
     }
 }
 
@@ -77,11 +75,13 @@ pub struct GcRecvQueue(pub &'static flume::Receiver<Vec<u8>>);
 
 #[derive(Collect)]
 #[collect(require_static)]
-pub struct GcSendQueue(pub &'static flume::Sender<Vec<u8>>);
+pub struct GcOutgoingQueue(pub &'static flume::Sender<OutgoingSocketAction>);
 
-#[derive(Collect)]
-#[collect(require_static)]
-pub struct GcFlushQueue(pub &'static flume::Sender<()>);
+pub enum OutgoingSocketAction {
+    Send(Vec<u8>),
+    Flush,
+    Close,
+}
 
 #[derive(Clone, Collect)]
 #[collect(no_drop)]
@@ -90,8 +90,7 @@ pub struct SocketObjectData<'gc> {
     base: ScriptObjectData<'gc>,
 
     recv_queue: Option<GcCell<'gc, GcRecvQueue>>,
-    send_queue: Option<GcCell<'gc, GcSendQueue>>,
-    flush_queue: Option<GcCell<'gc, GcFlushQueue>>,
+    outgoing_queue: Option<GcCell<'gc, GcOutgoingQueue>>,
 }
 
 impl<'gc> TObject<'gc> for SocketObject<'gc> {

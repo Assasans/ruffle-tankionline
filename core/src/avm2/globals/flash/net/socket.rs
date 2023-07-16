@@ -1,15 +1,11 @@
 //! `flash.net.Socket` native function definitions
 
-use std::io::{Read, Write};
-use tokio::net::TcpStream;
-use gc_arena::GcCell;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::avm2::activation::Activation;
-use crate::avm2::object::{GcFlushQueue, GcRecvQueue, GcSendQueue, TObject};
-use crate::avm2::value::Value;
-use crate::avm2::{Avm2, Error, EventObject, Multiname, Object};
 use crate::avm2::bytearray::ByteArrayStorage;
-use crate::loader::{DataFormat, Loader};
+use crate::avm2::object::{GcOutgoingQueue, GcRecvQueue, OutgoingSocketAction, TObject};
+use crate::avm2::value::Value;
+use crate::avm2::{Error, Object};
+use gc_arena::GcCell;
 
 pub use crate::avm2::object::socket_allocator;
 
@@ -25,19 +21,21 @@ pub fn connect<'gc>(
         let host = match args.get(0) {
             Some(Value::String(host)) => host,
             // This should never actually happen
-            _ => panic!("host fucked up")
+            _ => panic!("host fucked up"),
         };
         let port = match args.get(1) {
             Some(Value::Integer(port)) => *port as u16,
             // This should never actually happen
-            _ => panic!("port fucked up")
+            _ => panic!("port fucked up"),
         };
 
         let addr = (host.to_string(), port);
 
-        let future = activation.context
-            .load_manager
-            .load_socket(activation.context.player.clone(), this, addr);
+        let future = activation.context.load_manager.load_socket(
+            activation.context.player.clone(),
+            this,
+            addr,
+        );
         activation.context.navigator.spawn_future(future);
 
         return Ok(Value::Undefined);
@@ -47,7 +45,7 @@ pub fn connect<'gc>(
 
 /// Native function definition for `Socket.writeBytes`
 pub fn write_bytes<'gc>(
-    activation: &mut Activation<'_, 'gc>,
+    _activation: &mut Activation<'_, 'gc>,
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
@@ -57,25 +55,32 @@ pub fn write_bytes<'gc>(
         let bytes = match args.get(0) {
             Some(Value::Object(bytes)) => bytes.as_bytearray().unwrap(),
             // This should never actually happen
-            _ => panic!("bytes fucked up")
+            _ => panic!("bytes fucked up"),
         };
         let offset = match args.get(1) {
             Some(Value::Integer(offset)) => *offset as usize,
             // This should never actually happen
-            _ => panic!("offset fucked up")
+            _ => panic!("offset fucked up"),
         };
         let length = match args.get(2) {
             Some(Value::Integer(length)) => *length as usize,
             // This should never actually happen
-            _ => panic!("length fucked up")
+            _ => panic!("length fucked up"),
         };
-        tracing::debug!("Socket.writeBytes: {:?} offset={} len={}", bytes, offset, length);
+        tracing::debug!(
+            "Socket.writeBytes: {:?} offset={} len={}",
+            bytes,
+            offset,
+            length
+        );
 
-        let mut socket: GcCell<'gc, GcSendQueue> = this.send_queue().unwrap();
-        let socket = socket.read();
-        let socket = socket.0;
-        socket.send(ByteArrayStorage::bytes(&bytes).to_vec()).unwrap();
-        // socket.write_all(ByteArrayStorage::bytes(&bytes)).unwrap();
+        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
+        let queue = queue.read().0;
+        queue
+            .send(OutgoingSocketAction::Send(
+                ByteArrayStorage::bytes(&bytes).to_vec(),
+            ))
+            .unwrap();
 
         return Ok(Value::Undefined);
     }
@@ -99,10 +104,11 @@ pub fn write_byte<'gc>(
             .unwrap();
         tracing::debug!("Socket.writeByte: {:?}", byte);
 
-        let mut socket: GcCell<'gc, GcSendQueue> = this.send_queue().unwrap();
-        let socket = socket.read();
-        let socket = socket.0;
-        socket.send(vec![byte as u8]).unwrap();
+        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
+        let queue = queue.read().0;
+        queue
+            .send(OutgoingSocketAction::Send(vec![byte as u8]))
+            .unwrap();
 
         return Ok(Value::Undefined);
     }
@@ -111,23 +117,42 @@ pub fn write_byte<'gc>(
 
 /// Native function definition for `Socket.flush`
 pub fn flush<'gc>(
-    activation: &mut Activation<'_, 'gc>,
+    _activation: &mut Activation<'_, 'gc>,
     this: Object<'gc>,
-    args: &[Value<'gc>],
+    _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     tracing::debug!("Socket.flush: start");
 
     if let Some(this) = this.as_socket() {
-        let mut socket: GcCell<'gc, GcFlushQueue> = this.flush_queue().unwrap();
-        let socket = socket.read();
-        let socket = socket.0;
-        if !socket.is_disconnected() {
-            socket.send(()).unwrap();
+        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
+        let queue = queue.read().0;
+        if !queue.is_disconnected() {
+            queue.send(OutgoingSocketAction::Flush).unwrap();
         }
 
         return Ok(Value::Undefined);
     }
     Err("Socket.prototype.flush has been called on an incompatible object".into())
+}
+
+/// Native function definition for `Socket.close`
+pub fn close<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    tracing::debug!("Socket.flush: start");
+
+    if let Some(this) = this.as_socket() {
+        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
+        let queue = queue.read().0;
+        if !queue.is_disconnected() {
+            queue.send(OutgoingSocketAction::Close).unwrap();
+        }
+
+        return Ok(Value::Undefined);
+    }
+    Err("Socket.prototype.close has been called on an incompatible object".into())
 }
 
 /// Native function definition for `Socket.readBytes`
@@ -140,21 +165,28 @@ pub fn read_bytes<'gc>(
 
     if let Some(this) = this.as_socket() {
         let mut bytes = match args.get(0) {
-            Some(Value::Object(bytes)) => bytes.as_bytearray_mut(activation.context.gc_context).unwrap(),
+            Some(Value::Object(bytes)) => bytes
+                .as_bytearray_mut(activation.context.gc_context)
+                .unwrap(),
             // This should never actually happen
-            _ => panic!("bytes fucked up")
+            _ => panic!("bytes fucked up"),
         };
         let offset = match args.get(1) {
             Some(Value::Integer(offset)) => *offset as usize,
             // This should never actually happen
-            _ => panic!("offset fucked up")
+            _ => panic!("offset fucked up"),
         };
         let length = match args.get(2) {
             Some(Value::Integer(length)) => *length as usize,
             // This should never actually happen
-            _ => panic!("length fucked up")
+            _ => panic!("length fucked up"),
         };
-        tracing::debug!("Socket.readBytes: {:?} offset={} len={}", bytes, offset, length);
+        tracing::debug!(
+            "Socket.readBytes: {:?} offset={} len={}",
+            bytes,
+            offset,
+            length
+        );
 
         // let length = if length == 0 { 1024 } else { length };
 
@@ -189,7 +221,12 @@ pub fn read_bytes<'gc>(
         let position = bytes.position();
         bytes.write_at(&buffer, position).unwrap();
         // bytes.write_bytes(&buffer).unwrap();
-        tracing::error!("read {} bytes out of {}, pos: {}", buffer.len(), length, position);
+        tracing::error!(
+            "read {} bytes out of {}, pos: {}",
+            buffer.len(),
+            length,
+            position
+        );
         tracing::error!("{:?}", buffer);
 
         return Ok(Value::Undefined);

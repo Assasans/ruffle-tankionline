@@ -15,10 +15,12 @@ package flash.globalization
 
         public function format(dateTime:Date):String {
             stub_method("flash.globalization.DateTimeFormatter", "format");
+            return "";
         }
 
         public function formatUTC(dateTime:Date):String {
             stub_method("flash.globalization.DateTimeFormatter", "formatUTC");
+            return "";
         }
 
         public static function getAvailableLocaleIDNames():Vector.<String> {
@@ -27,14 +29,17 @@ package flash.globalization
 
         public function getDateStyle():String {
             stub_method("flash.globalization.DateTimeFormatter", "getDateStyle");
+            return "";
         }
 
         public function getDateTimePattern():String {
             stub_method("flash.globalization.DateTimeFormatter", "getDateTimePattern");
+            return "";
         }
 
         public function getFirstWeekday():int {
             stub_method("flash.globalization.DateTimeFormatter", "getFirstWeekday");
+            return 0;
         }
 
         public function getMonthNames(nameStyle:String = "full", context:String = "standalone"):Vector.<String> {
@@ -43,6 +48,7 @@ package flash.globalization
 
         public function getTimeStyle():String {
             stub_method("flash.globalization.DateTimeFormatter", "getTimeStyle");
+            return "";
         }
 
         public function getWeekdayNames(nameStyle:String = "full", context:String = "standalone"):Vector.<String> {

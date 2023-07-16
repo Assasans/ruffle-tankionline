@@ -5,8 +5,14 @@ use crate::avm1::ExecutionReason;
 use crate::avm1::{Activation, ActivationIdentifier};
 use crate::avm1::{Object, SoundObject, TObject, Value};
 use crate::avm2::bytearray::ByteArrayStorage;
-use crate::avm2::object::{BitmapDataObject, ByteArrayObject, EventObject as Avm2EventObject, GcFlushQueue, GcRecvQueue, GcSendQueue, LoaderStream, SocketObject, TObject as _};
-use crate::avm2::{Activation as Avm2Activation, Avm2, Domain as Avm2Domain, EventObject, Object as Avm2Object, Value as Avm2Value};
+use crate::avm2::object::{
+    BitmapDataObject, ByteArrayObject, EventObject as Avm2EventObject, GcOutgoingQueue,
+    GcRecvQueue, LoaderStream, OutgoingSocketAction, SocketObject, TObject as _,
+};
+use crate::avm2::{
+    Activation as Avm2Activation, Avm2, Domain as Avm2Domain, EventObject, Object as Avm2Object,
+    Value as Avm2Value,
+};
 use crate::backend::navigator::{OwnedFuture, Request};
 use crate::bitmap::bitmap_data::Color;
 use crate::bitmap::bitmap_data::{BitmapData, BitmapDataWrapper};
@@ -23,21 +29,17 @@ use crate::string::AvmString;
 use crate::tag_utils::SwfMovie;
 use crate::vminterface::Instantiator;
 use encoding_rs::UTF_8;
+use fluent_templates::lazy_static::lazy_static;
 use gc_arena::{Collect, GcCell};
 use generational_arena::{Arena, Index};
 use ruffle_render::utils::{determine_jpeg_tag_format, JpegTagFormat};
-use std::{fmt, io};
-use std::future::Future;
-use std::io::{ErrorKind, Read};
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
-use std::task::{Context, Poll};
 use std::time::Duration;
-use fluent_templates::lazy_static::lazy_static;
+use std::fmt;
 use swf::read::{extract_swz, read_compression_type};
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
-use tokio::net::{TcpStream, ToSocketAddrs};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
 use tokio::select;
 use url::{form_urlencoded, ParseError, Url};
@@ -440,7 +442,7 @@ impl<'gc> LoadManager<'gc> {
         &mut self,
         player: Weak<Mutex<Player>>,
         target_socket: SocketObject<'gc>,
-        addr: (String, u16)
+        addr: (String, u16),
     ) -> OwnedFuture<(), Error> {
         let loader = Loader::Socket {
             self_handle: None,
@@ -2109,14 +2111,12 @@ impl<'gc> Loader<'gc> {
     fn socket_loader(
         &mut self,
         player: Weak<Mutex<Player>>,
-        addr: (String, u16)
+        addr: (String, u16),
     ) -> OwnedFuture<(), Error> {
         tracing::error!("started socket_loader");
 
         let handle = match self {
-            Loader::Socket { self_handle, .. } => {
-                self_handle.expect("Loader not self-introduced")
-            }
+            Loader::Socket { self_handle, .. } => self_handle.expect("Loader not self-introduced"),
             _ => return Box::pin(async { Err(Error::NotSocketLoader) }),
         };
 
@@ -2125,10 +2125,9 @@ impl<'gc> Loader<'gc> {
             .expect("Could not upgrade weak reference to player");
 
         let (connect_tx, connect_rx) = flume::bounded(0);
-        let (send_tx, send_rx) = flume::unbounded::<Vec<u8>>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingSocketAction>();
         let (recv_tx, recv_rx) = flume::unbounded::<Vec<u8>>();
         let (recv_event_tx, recv_event_rx) = flume::unbounded();
-        let (flush_tx, flush_rx) = flume::unbounded();
 
         RT.spawn(async move {
             tracing::error!("started IO future");
@@ -2157,18 +2156,27 @@ impl<'gc> Loader<'gc> {
                         recv_tx.send_async(buffer[..length].to_vec()).await.unwrap();
                     }
 
-                    buffer = send_rx.recv_async() => {
-                        let buffer = buffer.unwrap();
-                        tracing::error!("write {} bytes into socket (buffered)", buffer.len());
-                        send_buffer.extend(&buffer);
-                        // socket.write_all(&buffer).await.unwrap();
-                    }
+                    action = outgoing_rx.recv_async() => {
+                        let action = action.unwrap();
+                        match action {
+                            OutgoingSocketAction::Send(buffer) => {
+                                tracing::error!("write {} bytes into socket (buffered)", buffer.len());
+                                send_buffer.extend(&buffer);
+                            }
 
-                    _ = flush_rx.recv_async(), if send_rx.is_empty() => {
-                        tracing::error!("flush socket");
-                        socket.write_all(&send_buffer).await.unwrap();
-                        send_buffer.clear();
-                        socket.flush().await.unwrap();
+                            OutgoingSocketAction::Flush => {
+                                tracing::error!("flush socket");
+                                socket.write_all(&send_buffer).await.unwrap();
+                                send_buffer.clear();
+                                socket.flush().await.unwrap();
+                            }
+
+                            OutgoingSocketAction::Close => {
+                                tracing::error!("close socket");
+                                socket.shutdown().await.unwrap();
+                                break;
+                            }
+                        };
                     }
                 }
             }
@@ -2194,14 +2202,29 @@ impl<'gc> Loader<'gc> {
 
                 let gc_context = activation.context.gc_context;
 
-                target.set_recv_queue(Some(GcCell::new(gc_context, GcRecvQueue(Box::leak(Box::new(recv_rx))))), gc_context);
-                tracing::debug!("Socket.connect: set recv queue in native object {:?}", target);
+                target.set_recv_queue(
+                    Some(GcCell::new(
+                        gc_context,
+                        GcRecvQueue(Box::leak(Box::new(recv_rx))),
+                    )),
+                    gc_context,
+                );
+                tracing::debug!(
+                    "Socket.connect: set recv queue in native object {:?}",
+                    target
+                );
 
-                target.set_send_queue(Some(GcCell::new(gc_context, GcSendQueue(Box::leak(Box::new(send_tx))))), gc_context);
-                tracing::debug!("Socket.connect: set send queue in native object {:?}", target);
-
-                target.set_flush_queue(Some(GcCell::new(gc_context, GcFlushQueue(Box::leak(Box::new(flush_tx))))), gc_context);
-                tracing::debug!("Socket.connect: set flush queue in native object {:?}", target);
+                target.set_outgoing_queue(
+                    Some(GcCell::new(
+                        gc_context,
+                        GcOutgoingQueue(Box::leak(Box::new(outgoing_tx))),
+                    )),
+                    gc_context,
+                );
+                tracing::debug!(
+                    "Socket.connect: set outgoing queue in native object {:?}",
+                    target
+                );
 
                 let value = target.value_of(activation.context.gc_context).unwrap();
                 if let Avm2Value::Object(object) = value {
@@ -2275,11 +2298,7 @@ impl<'gc> Loader<'gc> {
                     .progressevent
                     .construct(
                         &mut activation,
-                        &[
-                            "close".into(),
-                            false.into(),
-                            false.into()
-                        ],
+                        &["close".into(), false.into(), false.into()],
                     )
                     .map_err(|e| Error::Avm2Error(e.to_string()))
                     .unwrap();

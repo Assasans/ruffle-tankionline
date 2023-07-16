@@ -29,7 +29,7 @@ package flash.display3D {
 
         public function get driverInfo():String {
             stub_getter("flash.display3D.Context3D", "driverInfo");
-            return "Dummy Ruffle driver";
+            return "Dummy Ruffle software driver";
         }
 
         public var enableErrorChecking:Boolean = true;
@@ -78,6 +78,10 @@ package flash.display3D {
             actionOnDepthPassStencilFail:String = "keep"
         ):void {
             stub_method("flash.display3D.Context3D", "setStencilActions");
+        }
+
+        public function dispose(recreate: Boolean = true):void {
+            stub_method("flash.display3D.Context3D", "dispose");
         }
     }
 }
