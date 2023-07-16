@@ -2149,8 +2149,12 @@ impl<'gc> Loader<'gc> {
                     length = socket.read(&mut buffer) => {
                         let length = length.unwrap();
                         tracing::error!("read {} bytes into buffer", length);
-                        recv_tx.send_async(buffer[..length].to_vec()).await.unwrap();
                         recv_event_tx.send_async(length).await.unwrap();
+                        if length == 0 {
+                            break;
+                        }
+
+                        recv_tx.send_async(buffer[..length].to_vec()).await.unwrap();
                     }
 
                     buffer = send_rx.recv_async() => {
@@ -2168,6 +2172,8 @@ impl<'gc> Loader<'gc> {
                     }
                 }
             }
+
+            tracing::error!("IO loop exited");
         });
 
         Box::pin(async move {
@@ -2207,9 +2213,13 @@ impl<'gc> Loader<'gc> {
 
             loop {
                 let length = recv_event_rx.recv_async().await.unwrap();
+                if length == 0 {
+                    tracing::error!("got 0 bytes");
+                    break;
+                }
 
                 player.lock().unwrap().update(|uc| {
-                    tracing::error!("locked player to send socketData event");
+                    tracing::error!("locked player to send ProgressEvent.SOCKET_DATA event");
 
                     let loader = uc.load_manager.get_loader(handle);
                     let target = match loader {
@@ -2244,6 +2254,42 @@ impl<'gc> Loader<'gc> {
                     }
                 });
             }
+
+            tracing::error!("socket end of file");
+
+            player.lock().unwrap().update(|uc| {
+                tracing::error!("locked player to send Event.CLOSE event");
+
+                let loader = uc.load_manager.get_loader(handle);
+                let target = match loader {
+                    Some(&Loader::Socket { target_socket, .. }) => target_socket,
+                    // We would have already returned after the previous 'update' call
+                    _ => unreachable!(),
+                };
+
+                let mut activation = Avm2Activation::from_nothing(uc.reborrow());
+
+                let event = activation
+                    .avm2()
+                    .classes()
+                    .progressevent
+                    .construct(
+                        &mut activation,
+                        &[
+                            "close".into(),
+                            false.into(),
+                            false.into()
+                        ],
+                    )
+                    .map_err(|e| Error::Avm2Error(e.to_string()))
+                    .unwrap();
+
+                let value = target.value_of(activation.context.gc_context).unwrap();
+                if let Avm2Value::Object(object) = value {
+                    Avm2::dispatch_event(&mut activation.context, event, object);
+                    tracing::error!("dispatched Event.CLOSE event");
+                }
+            });
 
             Ok(())
         })

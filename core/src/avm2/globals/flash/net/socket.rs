@@ -121,7 +121,9 @@ pub fn flush<'gc>(
         let mut socket: GcCell<'gc, GcFlushQueue> = this.flush_queue().unwrap();
         let socket = socket.read();
         let socket = socket.0;
-        socket.send(()).unwrap();
+        if !socket.is_disconnected() {
+            socket.send(()).unwrap();
+        }
 
         return Ok(Value::Undefined);
     }

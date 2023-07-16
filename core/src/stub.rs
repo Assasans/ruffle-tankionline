@@ -124,7 +124,7 @@ impl StubCollection {
     pub fn encounter(&mut self, stub: &Stub) {
         if !self.inner.contains(stub) {
             tracing::warn!("Encountered stub: {stub}");
-            // self.inner.insert(stub.clone());
+            self.inner.insert(stub.clone());
         }
     }
 
