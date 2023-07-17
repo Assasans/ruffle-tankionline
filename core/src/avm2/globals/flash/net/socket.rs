@@ -1,13 +1,13 @@
 //! `flash.net.Socket` native function definitions
 
 use crate::avm2::activation::Activation;
-use crate::avm2::bytearray::ByteArrayStorage;
-use crate::avm2::object::{GcOutgoingQueue, GcRecvQueue, OutgoingSocketAction, TObject};
+use crate::avm2::error::security_error;
+use crate::avm2::object::{OutgoingSocketAction, TObject};
 use crate::avm2::value::Value;
 use crate::avm2::{Error, Object};
-use gc_arena::GcCell;
 
 pub use crate::avm2::object::socket_allocator;
+use crate::avm2::parameters::ParametersExt;
 
 /// Native function definition for `Socket.connect`
 pub fn connect<'gc>(
@@ -15,26 +15,21 @@ pub fn connect<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    tracing::debug!("Socket.connect: start");
-
     if let Some(this) = this.as_socket() {
-        let host = match args.get(0) {
-            Some(Value::String(host)) => host,
-            // This should never actually happen
-            _ => panic!("host fucked up"),
-        };
-        let port = match args.get(1) {
-            Some(Value::Integer(port)) => *port as u16,
-            // This should never actually happen
-            _ => panic!("port fucked up"),
-        };
-
-        let addr = (host.to_string(), port);
+        let host = args.get_string(activation, 0)?;
+        let port = args.get_u32(activation, 1)?;
+        if port > 65535 {
+            return Err(Error::AvmError(security_error(
+                activation,
+                "Error #2003: Invalid socket port number specified.",
+                2003,
+            )?));
+        }
 
         let future = activation.context.load_manager.load_socket(
             activation.context.player.clone(),
             this,
-            addr,
+            (host.to_string(), port as u16),
         );
         activation.context.navigator.spawn_future(future);
 
@@ -45,28 +40,18 @@ pub fn connect<'gc>(
 
 /// Native function definition for `Socket.writeBytes`
 pub fn write_bytes<'gc>(
-    _activation: &mut Activation<'_, 'gc>,
+    activation: &mut Activation<'_, 'gc>,
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    tracing::debug!("Socket.writeBytes: start");
-
     if let Some(this) = this.as_socket() {
-        let bytes = match args.get(0) {
-            Some(Value::Object(bytes)) => bytes.as_bytearray().unwrap(),
-            // This should never actually happen
-            _ => panic!("bytes fucked up"),
-        };
-        let offset = match args.get(1) {
-            Some(Value::Integer(offset)) => *offset as usize,
-            // This should never actually happen
-            _ => panic!("offset fucked up"),
-        };
-        let length = match args.get(2) {
-            Some(Value::Integer(length)) => *length as usize,
-            // This should never actually happen
-            _ => panic!("length fucked up"),
-        };
+        let bytes = args.get_object(activation, 0, "bytes")?;
+        let bytes = bytes
+            .as_bytearray()
+            .ok_or("ArgumentError: Parameter must be a ByteArray")?;
+        let offset = args.get_u32(activation, 1)?;
+        let length = args.get_u32(activation, 2)?;
+
         tracing::debug!(
             "Socket.writeBytes: {:?} offset={} len={}",
             bytes,
@@ -74,13 +59,25 @@ pub fn write_bytes<'gc>(
             length
         );
 
-        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
-        let queue = queue.read().0;
-        queue
-            .send(OutgoingSocketAction::Send(
-                ByteArrayStorage::bytes(&bytes).to_vec(),
-            ))
-            .unwrap();
+        let queue = match this.outgoing_queue() {
+            Some(queue) => Ok(queue),
+            None => Err(Error::AvmError(security_error(
+                activation,
+                "Error #2031: Socket Error.",
+                2031,
+            )?)),
+        }?;
+        let queue = queue.read();
+        match queue.send(OutgoingSocketAction::Write(bytes.bytes().to_vec())) {
+            Ok(_) => {}
+            Err(_) => {
+                return Err(Error::AvmError(security_error(
+                    activation,
+                    "Error #2031: Socket Error.",
+                    2031,
+                )?))
+            }
+        }
 
         return Ok(Value::Undefined);
     }
@@ -93,22 +90,33 @@ pub fn write_byte<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    tracing::debug!("Socket.writeByte: start");
-
     if let Some(this) = this.as_socket() {
         let byte = args
             .get(0)
             .cloned()
             .unwrap_or(Value::Undefined)
-            .coerce_to_i32(activation)
-            .unwrap();
+            .coerce_to_i32(activation)?;
         tracing::debug!("Socket.writeByte: {:?}", byte);
 
-        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
-        let queue = queue.read().0;
-        queue
-            .send(OutgoingSocketAction::Send(vec![byte as u8]))
-            .unwrap();
+        let queue = match this.outgoing_queue() {
+            Some(queue) => Ok(queue),
+            None => Err(Error::AvmError(security_error(
+                activation,
+                "Error #2031: Socket Error.",
+                2031,
+            )?)),
+        }?;
+        let queue = queue.read();
+        match queue.send(OutgoingSocketAction::Write(vec![byte as u8])) {
+            Ok(_) => {}
+            Err(_) => {
+                return Err(Error::AvmError(security_error(
+                    activation,
+                    "Error #2031: Socket Error.",
+                    2031,
+                )?))
+            }
+        }
 
         return Ok(Value::Undefined);
     }
@@ -117,17 +125,29 @@ pub fn write_byte<'gc>(
 
 /// Native function definition for `Socket.flush`
 pub fn flush<'gc>(
-    _activation: &mut Activation<'_, 'gc>,
+    activation: &mut Activation<'_, 'gc>,
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    tracing::debug!("Socket.flush: start");
-
     if let Some(this) = this.as_socket() {
-        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
-        let queue = queue.read().0;
-        if !queue.is_disconnected() {
-            queue.send(OutgoingSocketAction::Flush).unwrap();
+        let queue = match this.outgoing_queue() {
+            Some(queue) => Ok(queue),
+            None => Err(Error::AvmError(security_error(
+                activation,
+                "Error #2031: Socket Error.",
+                2031,
+            )?)),
+        }?;
+        let queue = queue.read();
+        match queue.send(OutgoingSocketAction::Flush) {
+            Ok(_) => {}
+            Err(_) => {
+                return Err(Error::AvmError(security_error(
+                    activation,
+                    "Error #2031: Socket Error.",
+                    2031,
+                )?))
+            }
         }
 
         return Ok(Value::Undefined);
@@ -137,17 +157,29 @@ pub fn flush<'gc>(
 
 /// Native function definition for `Socket.close`
 pub fn close<'gc>(
-    _activation: &mut Activation<'_, 'gc>,
+    activation: &mut Activation<'_, 'gc>,
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    tracing::debug!("Socket.flush: start");
-
     if let Some(this) = this.as_socket() {
-        let mut queue: GcCell<'gc, GcOutgoingQueue> = this.outgoing_queue().unwrap();
-        let queue = queue.read().0;
-        if !queue.is_disconnected() {
-            queue.send(OutgoingSocketAction::Close).unwrap();
+        let queue = match this.outgoing_queue() {
+            Some(queue) => Ok(queue),
+            None => Err(Error::AvmError(security_error(
+                activation,
+                "Error #2031: Socket Error.",
+                2031,
+            )?)),
+        }?;
+        let queue = queue.read();
+        match queue.send(OutgoingSocketAction::Close) {
+            Ok(_) => {}
+            Err(_) => {
+                return Err(Error::AvmError(security_error(
+                    activation,
+                    "Error #2031: Socket Error.",
+                    2031,
+                )?))
+            }
         }
 
         return Ok(Value::Undefined);
@@ -161,26 +193,14 @@ pub fn read_bytes<'gc>(
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    tracing::debug!("Socket.readBytes: start");
-
     if let Some(this) = this.as_socket() {
-        let mut bytes = match args.get(0) {
-            Some(Value::Object(bytes)) => bytes
-                .as_bytearray_mut(activation.context.gc_context)
-                .unwrap(),
-            // This should never actually happen
-            _ => panic!("bytes fucked up"),
-        };
-        let offset = match args.get(1) {
-            Some(Value::Integer(offset)) => *offset as usize,
-            // This should never actually happen
-            _ => panic!("offset fucked up"),
-        };
-        let length = match args.get(2) {
-            Some(Value::Integer(length)) => *length as usize,
-            // This should never actually happen
-            _ => panic!("length fucked up"),
-        };
+        let bytes = args.get_object(activation, 0, "bytes")?;
+        let mut bytes = bytes
+            .as_bytearray_mut(activation.context.gc_context)
+            .ok_or("ArgumentError: Parameter must be a ByteArray")?;
+        let offset = args.get_u32(activation, 1)? as usize;
+        let length = args.get_u32(activation, 2)? as usize;
+
         tracing::debug!(
             "Socket.readBytes: {:?} offset={} len={}",
             bytes,
@@ -188,17 +208,28 @@ pub fn read_bytes<'gc>(
             length
         );
 
-        // let length = if length == 0 { 1024 } else { length };
-
-        let mut socket: GcCell<'gc, GcRecvQueue> = this.recv_queue().unwrap();
-        let socket = socket.read();
-        let socket = socket.0;
+        let queue = match this.recv_queue() {
+            Some(queue) => Ok(queue),
+            None => Err(Error::AvmError(security_error(
+                activation,
+                "Error #2031: Socket Error.",
+                2031,
+            )?)),
+        }?;
+        let queue = queue.read();
+        if queue.is_disconnected() {
+            return Err(Error::AvmError(security_error(
+                activation,
+                "Error #2031: Socket Error.",
+                2031,
+            )?));
+        }
 
         let buffer = if length == 0 {
             tracing::debug!("Socket.readBytes: reading unbounded");
             let mut buffer = Vec::with_capacity(1024);
-            while socket.len() > 0 {
-                let chunk = socket.recv().unwrap();
+            while queue.len() > 0 {
+                let chunk = queue.recv().unwrap();
                 buffer.extend(chunk);
             }
             tracing::debug!("Socket.readBytes: read unbounded: {} bytes", buffer.len());
@@ -208,7 +239,7 @@ pub fn read_bytes<'gc>(
             tracing::debug!("Socket.readBytes: reading bounded");
             let mut buffer = Vec::with_capacity(length);
             while buffer.len() < length {
-                let chunk = socket.recv().unwrap();
+                let chunk = queue.recv().unwrap();
                 buffer.extend(chunk);
             }
             tracing::debug!("Socket.readBytes: read bounded: {} bytes", buffer.len());
@@ -216,18 +247,16 @@ pub fn read_bytes<'gc>(
             buffer
         };
 
-        // self.position.set(self.position.get() + buf.len());
-        tracing::error!("byte output position: {}", bytes.position());
         let position = bytes.position();
         bytes.write_at(&buffer, position).unwrap();
-        // bytes.write_bytes(&buffer).unwrap();
-        tracing::error!(
-            "read {} bytes out of {}, pos: {}",
+
+        tracing::debug!(
+            "read {} bytes out of {}, pos: {}\n{:?}",
             buffer.len(),
             length,
-            position
+            position,
+            buffer
         );
-        tracing::error!("{:?}", buffer);
 
         return Ok(Value::Undefined);
     }

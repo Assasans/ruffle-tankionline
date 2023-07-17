@@ -29,18 +29,16 @@ use crate::string::AvmString;
 use crate::tag_utils::SwfMovie;
 use crate::vminterface::Instantiator;
 use encoding_rs::UTF_8;
-use fluent_templates::lazy_static::lazy_static;
 use gc_arena::{Collect, GcCell};
 use generational_arena::{Arena, Index};
 use ruffle_render::utils::{determine_jpeg_tag_format, JpegTagFormat};
+use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use std::fmt;
 use swf::read::{extract_swz, read_compression_type};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::runtime::Runtime;
 use tokio::select;
 use url::{form_urlencoded, ParseError, Url};
 
@@ -2113,7 +2111,7 @@ impl<'gc> Loader<'gc> {
         player: Weak<Mutex<Player>>,
         addr: (String, u16),
     ) -> OwnedFuture<(), Error> {
-        tracing::error!("started socket_loader");
+        tracing::debug!("started socket_loader");
 
         let handle = match self {
             Loader::Socket { self_handle, .. } => self_handle.expect("Loader not self-introduced"),
@@ -2129,67 +2127,74 @@ impl<'gc> Loader<'gc> {
         let (recv_tx, recv_rx) = flume::unbounded::<Vec<u8>>();
         let (recv_event_tx, recv_event_rx) = flume::unbounded();
 
-        RT.spawn(async move {
-            tracing::error!("started IO future");
-
-            tracing::error!("TcpStream::connect to {:?}", addr);
-            let mut socket = TcpStream::connect(addr).await.unwrap();
-
-            tracing::error!("connect_tx.send_async enter");
-            connect_tx.send_async(()).await.unwrap();
-            tracing::error!("connect_tx.send_async exit");
-
-            let mut send_buffer = Vec::new();
-            let mut buffer = Vec::new();
-            buffer.resize(1024, 0);
-            loop {
-                tracing::error!("waiting for IO...");
-                select! {
-                    length = socket.read(&mut buffer) => {
-                        let length = length.unwrap();
-                        tracing::error!("read {} bytes into buffer", length);
-                        recv_event_tx.send_async(length).await.unwrap();
-                        if length == 0 {
-                            break;
-                        }
-
-                        recv_tx.send_async(buffer[..length].to_vec()).await.unwrap();
-                    }
-
-                    action = outgoing_rx.recv_async() => {
-                        let action = action.unwrap();
-                        match action {
-                            OutgoingSocketAction::Send(buffer) => {
-                                tracing::error!("write {} bytes into socket (buffered)", buffer.len());
-                                send_buffer.extend(&buffer);
-                            }
-
-                            OutgoingSocketAction::Flush => {
-                                tracing::error!("flush socket");
-                                socket.write_all(&send_buffer).await.unwrap();
-                                send_buffer.clear();
-                                socket.flush().await.unwrap();
-                            }
-
-                            OutgoingSocketAction::Close => {
-                                tracing::error!("close socket");
-                                socket.shutdown().await.unwrap();
-                                break;
-                            }
-                        };
-                    }
-                }
-            }
-
-            tracing::error!("IO loop exited");
-        });
-
         Box::pin(async move {
-            tracing::error!("started read future");
+            tracing::debug!("started read future");
+
+            // It should be possible to get rid of the lock if we pass `&mut NavigatorBackend`
+            // to this method, but "cannot borrow `...` as mutable more than once at a time".
+            player.lock().unwrap().update(|uc| {
+                tracing::debug!("locked player to start IO future");
+
+                let activation = Avm2Activation::from_nothing(uc.reborrow());
+                activation.context.navigator.spawn_io_future(Box::pin(async move {
+                    tracing::debug!("started IO future");
+
+                    tracing::debug!("TcpStream::connect to {:?}", addr);
+                    let mut socket = TcpStream::connect(addr).await.unwrap();
+
+                    tracing::debug!("connect_tx.send_async enter");
+                    connect_tx.send_async(()).await.unwrap();
+                    tracing::debug!("connect_tx.send_async exit");
+
+                    let mut send_buffer = Vec::new();
+                    let mut buffer = Vec::new();
+                    buffer.resize(1024, 0);
+                    loop {
+                        tracing::debug!("waiting for IO...");
+                        select! {
+                            length = socket.read(&mut buffer) => {
+                                let length = length.unwrap();
+                                tracing::debug!("read {} bytes into buffer", length);
+                                recv_event_tx.send_async(length).await.unwrap();
+                                if length == 0 {
+                                    break;
+                                }
+
+                                recv_tx.send_async(buffer[..length].to_vec()).await.unwrap();
+                            }
+
+                            action = outgoing_rx.recv_async() => {
+                                let action = action.unwrap();
+                                match action {
+                                    OutgoingSocketAction::Write(buffer) => {
+                                        tracing::debug!("write {} bytes into socket (buffered)", buffer.len());
+                                        send_buffer.extend(&buffer);
+                                    }
+
+                                    OutgoingSocketAction::Flush => {
+                                        tracing::debug!("flush socket");
+                                        socket.write_all(&send_buffer).await.unwrap();
+                                        send_buffer.clear();
+                                        socket.flush().await.unwrap();
+                                    }
+
+                                    OutgoingSocketAction::Close => {
+                                        tracing::debug!("close socket");
+                                        socket.shutdown().await.unwrap();
+                                        break;
+                                    }
+                                };
+                            }
+                        }
+                    }
+
+                    tracing::debug!("IO loop exited");
+                }));
+            });
 
             connect_rx.recv_async().await.unwrap();
             player.lock().unwrap().update(|uc| {
-                tracing::error!("lock player to initialize socket object");
+                tracing::debug!("lock player to initialize socket object");
 
                 let loader = uc.load_manager.get_loader(handle);
                 let target = match loader {
@@ -2203,10 +2208,7 @@ impl<'gc> Loader<'gc> {
                 let gc_context = activation.context.gc_context;
 
                 target.set_recv_queue(
-                    Some(GcCell::new(
-                        gc_context,
-                        GcRecvQueue(Box::leak(Box::new(recv_rx))),
-                    )),
+                    Some(GcCell::new(gc_context, GcRecvQueue(recv_rx))),
                     gc_context,
                 );
                 tracing::debug!(
@@ -2215,10 +2217,7 @@ impl<'gc> Loader<'gc> {
                 );
 
                 target.set_outgoing_queue(
-                    Some(GcCell::new(
-                        gc_context,
-                        GcOutgoingQueue(Box::leak(Box::new(outgoing_tx))),
-                    )),
+                    Some(GcCell::new(gc_context, GcOutgoingQueue(outgoing_tx))),
                     gc_context,
                 );
                 tracing::debug!(
@@ -2237,12 +2236,12 @@ impl<'gc> Loader<'gc> {
             loop {
                 let length = recv_event_rx.recv_async().await.unwrap();
                 if length == 0 {
-                    tracing::error!("got 0 bytes");
+                    tracing::debug!("got 0 bytes");
                     break;
                 }
 
                 player.lock().unwrap().update(|uc| {
-                    tracing::error!("locked player to send ProgressEvent.SOCKET_DATA event");
+                    tracing::debug!("locked player to send ProgressEvent.SOCKET_DATA event");
 
                     let loader = uc.load_manager.get_loader(handle);
                     let target = match loader {
@@ -2273,15 +2272,15 @@ impl<'gc> Loader<'gc> {
                     let value = target.value_of(activation.context.gc_context).unwrap();
                     if let Avm2Value::Object(object) = value {
                         Avm2::dispatch_event(&mut activation.context, event, object);
-                        tracing::error!("dispatched ProgressEvent.SOCKET_DATA event");
+                        tracing::debug!("dispatched ProgressEvent.SOCKET_DATA event");
                     }
                 });
             }
 
-            tracing::error!("socket end of file");
+            tracing::debug!("socket end of file");
 
             player.lock().unwrap().update(|uc| {
-                tracing::error!("locked player to send Event.CLOSE event");
+                tracing::debug!("locked player to send Event.CLOSE event");
 
                 let loader = uc.load_manager.get_loader(handle);
                 let target = match loader {
@@ -2306,15 +2305,11 @@ impl<'gc> Loader<'gc> {
                 let value = target.value_of(activation.context.gc_context).unwrap();
                 if let Avm2Value::Object(object) = value {
                     Avm2::dispatch_event(&mut activation.context, event, object);
-                    tracing::error!("dispatched Event.CLOSE event");
+                    tracing::debug!("dispatched Event.CLOSE event");
                 }
             });
 
             Ok(())
         })
     }
-}
-
-lazy_static! {
-    static ref RT: Runtime = Runtime::new().unwrap();
 }

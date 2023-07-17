@@ -7,6 +7,9 @@ use ruffle_core::backend::navigator::{
 use ruffle_core::config::NetworkingAccessMode;
 use ruffle_core::indexmap::IndexMap;
 use ruffle_core::loader::Error;
+use std::borrow::Cow;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tracing_subscriber::layer::Layered;
 use tracing_subscriber::Registry;
@@ -347,6 +350,10 @@ impl NavigatorBackend for WebNavigatorBackend {
                 tracing::error!("Asynchronous error occurred: {}", e);
             }
         })
+    }
+
+    fn spawn_io_future(&mut self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        unimplemented!();
     }
 
     fn pre_process_url(&self, mut url: Url) -> Url {

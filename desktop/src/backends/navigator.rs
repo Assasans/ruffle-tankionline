@@ -12,9 +12,12 @@ use ruffle_core::backend::navigator::{
 };
 use ruffle_core::indexmap::IndexMap;
 use ruffle_core::loader::Error;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::mpsc::Sender;
+use tokio::runtime::Runtime;
 use url::{ParseError, Url};
 use winit::event_loop::EventLoopProxy;
 
@@ -36,6 +39,8 @@ pub struct ExternalNavigatorBackend {
     upgrade_to_https: bool,
 
     open_url_mode: OpenURLMode,
+
+    tokio_runtime: Runtime,
 }
 
 impl ExternalNavigatorBackend {
@@ -68,6 +73,7 @@ impl ExternalNavigatorBackend {
             base_url,
             upgrade_to_https,
             open_url_mode,
+            tokio_runtime: Runtime::new().unwrap(),
         }
     }
 }
@@ -300,6 +306,10 @@ impl NavigatorBackend for ExternalNavigatorBackend {
                 "A task was queued on an event loop that has already ended. It will not be polled."
             );
         }
+    }
+
+    fn spawn_io_future(&mut self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        self.tokio_runtime.spawn(future);
     }
 
     fn pre_process_url(&self, mut url: Url) -> Url {

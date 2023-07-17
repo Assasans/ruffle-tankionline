@@ -233,6 +233,11 @@ pub trait NavigatorBackend {
     /// This seems highly limiting.
     fn spawn_future(&mut self, future: OwnedFuture<(), Error>);
 
+    /// Spawn a future on the IO scheduler.
+    ///
+    /// This function will use Tokio's runtime on desktop.
+    fn spawn_io_future(&mut self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
+
     /// Handle any context specific pre-processing
     ///
     /// Changing http -> https for example. This function may alter any part of the
@@ -362,6 +367,13 @@ impl NavigatorBackend for NullNavigatorBackend {
 
     fn spawn_future(&mut self, future: OwnedFuture<(), Error>) {
         self.spawner.spawn_local(future);
+    }
+
+    fn spawn_io_future(&mut self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        self.spawner.spawn_local(Box::pin(async move {
+            future.await;
+            Ok(())
+        }));
     }
 
     fn pre_process_url(&self, url: Url) -> Url {

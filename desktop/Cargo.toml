@@ -40,6 +40,7 @@ fluent-templates = "0.8.0"
 
 # Deliberately held back to match tracy client used by profiling crate
 tracing-tracy = { version = "=0.10.2", optional = true }
+tokio = { version = "1.29.1", features = ["rt", "net", "macros", "io-util"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3.9"

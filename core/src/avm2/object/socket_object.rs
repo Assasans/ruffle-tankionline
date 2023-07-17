@@ -6,8 +6,10 @@ use crate::avm2::object::{ClassObject, Object, ObjectPtr, TObject};
 use crate::avm2::value::Value;
 use crate::avm2::Error;
 use core::fmt;
+use flume::{Receiver, Sender};
 use gc_arena::{Collect, GcCell, GcWeakCell, MutationContext};
 use std::cell::{Ref, RefMut};
+use std::ops::Deref;
 
 /// A class instance allocator that allocates Socket objects.
 pub fn socket_allocator<'gc>(
@@ -71,14 +73,30 @@ impl<'gc> SocketObject<'gc> {
 
 #[derive(Collect)]
 #[collect(require_static)]
-pub struct GcRecvQueue(pub &'static flume::Receiver<Vec<u8>>);
+pub struct GcRecvQueue(pub Receiver<Vec<u8>>);
+
+impl Deref for GcRecvQueue {
+    type Target = Receiver<Vec<u8>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Collect)]
 #[collect(require_static)]
-pub struct GcOutgoingQueue(pub &'static flume::Sender<OutgoingSocketAction>);
+pub struct GcOutgoingQueue(pub Sender<OutgoingSocketAction>);
+
+impl Deref for GcOutgoingQueue {
+    type Target = Sender<OutgoingSocketAction>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 pub enum OutgoingSocketAction {
-    Send(Vec<u8>),
+    Write(Vec<u8>),
     Flush,
     Close,
 }

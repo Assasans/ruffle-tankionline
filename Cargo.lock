@@ -3886,6 +3886,7 @@ dependencies = [
  "ruffle_render_wgpu",
  "ruffle_video_software",
  "sys-locale",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "tracing-tracy",

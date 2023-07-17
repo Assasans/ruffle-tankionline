@@ -6,7 +6,9 @@ use ruffle_core::backend::navigator::{
 };
 use ruffle_core::indexmap::IndexMap;
 use ruffle_core::loader::Error;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use url::{ParseError, Url};
 
 /// A `NavigatorBackend` used by tests that supports logging fetch requests.
@@ -89,6 +91,13 @@ impl NavigatorBackend for TestNavigatorBackend {
 
     fn spawn_future(&mut self, future: OwnedFuture<(), Error>) {
         self.spawner.spawn_local(future);
+    }
+
+    fn spawn_io_future(&mut self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        self.spawner.spawn_local(Box::pin(async move {
+            future.await;
+            Ok(())
+        }));
     }
 
     fn pre_process_url(&self, url: Url) -> Url {
